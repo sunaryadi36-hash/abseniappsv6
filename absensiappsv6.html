@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Absensi Selfie</title>
+  <style>
+    :root { --bg: #f8fafc; --card: #ffffff; --primary: #3b82f6; --success: #10b981; --error: #ef4444; --text: #1e293b; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 16px; }
+    .container { max-width: 420px; width: 100%; background: var(--card); border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); padding: 20px; }
+    h2 { text-align: center; margin-bottom: 16px; font-weight: 600; }
+    .preview-box { position: relative; width: 100%; aspect-ratio: 4/3; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+    video, canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .guide-circle { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 70%; aspect-ratio: 3/4; border: 3px dashed rgba(255,255,255,0.6); border-radius: 50%; pointer-events: none; }
+    .info { background: #f1f5f9; padding: 12px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
+    .info span { font-weight: 500; }
+    .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; background: var(--primary); color: white; font-weight: 600; font-size: 16px; cursor: pointer; transition: 0.2s; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn:active { transform: scale(0.98); }
+    .status { text-align: center; margin-top: 12px; font-size: 14px; min-height: 20px; }
+    .status.success { color: var(--success); }
+    .status.error { color: var(--error); }
+    #loading { display: none; margin: 8px auto; width: 24px; height: 24px; border: 3px solid #ddd; border-top: 3px solid var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>📷 Absensi Selfie</h2>
+    <div class="preview-box">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas" style="display:none;"></canvas>
+      <div class="guide-circle"></div>
+    </div>
+
+    <div class="info" id="locationInfo">📍 Mengambil lokasi...</div>
+    <div class="info">👤 Nama: <input type="text" id="userName" placeholder="Masukkan nama lengkap" style="width:100%; margin-top:6px; padding:8px; border:1px solid #cbd5e1; border-radius:8px;"></div>
+
+    <button class="btn" id="captureBtn" disabled>📸 Ambil Foto & Absen</button>
+    <div id="loading"></div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <script>
+    // ⚙️ KONFIGURASI FRONTEND
+    const CONFIG = {
+      WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbzE1eF2b97jORCl4Ss8PbvRZ8G1mmgp-CETm0y3JC5hRmeyu4CGzjnUxP5y4yhoA2mY/exec',
+      GEO_CENTER_LAT: -7.69158062, // Ganti dengan titik pusat valid
+      GEO_CENTER_LNG: 114.06347373,
+      MAX_RADIUS_METERS: 300,
+      COMPRESS_QUALITY: 0.7,
+      MAX_WIDTH: 1280
+    };
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const statusEl = document.getElementById('status');
+    const btn = document.getElementById('captureBtn');
+    const loading = document.getElementById('loading');
+    let userLat, userLng, userAccuracy;
+
+    // 1. Inisialisasi Kamera
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } });
+        video.srcObject = stream;
+      } catch (err) {
+        showStatus('❌ Izin kamera ditolak. Periksa pengaturan browser.', 'error');
+      }
+    }
+
+    // 2. Geolocation & Geofencing
+    function getLocation() {
+      if (!navigator.geolocation) return showStatus('❌ Browser tidak mendukung geolokasi.', 'error');
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          userLat = pos.coords.latitude;
+          userLng = pos.coords.longitude;
+          userAccuracy = pos.coords.accuracy;
+          const dist = haversine(CONFIG.GEO_CENTER_LAT, CONFIG.GEO_CENTER_LNG, userLat, userLng);
+          document.getElementById('locationInfo').innerHTML = `📍 Akurasi: ±${userAccuracy.toFixed(0)}m<br>📏 Jarak dari titik valid: ${dist.toFixed(0)}m`;
+          btn.disabled = dist > CONFIG.MAX_RADIUS_METERS;
+          if (btn.disabled) showStatus('⚠️ Lokasi di luar area absensi. Dekatkan ke titik valid.', 'error');
+          else showStatus('✅ Lokasi valid. Siap absen.', 'success');
+        },
+        err => showStatus(`❌ Gagal ambil lokasi: ${err.message}`, 'error'),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
+
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371e3, toRad = x => x * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    // 3. Capture, Kompres & Upload
+    btn.addEventListener('click', async () => {
+      const name = document.getElementById('userName').value.trim();
+      if (!name) return showStatus('⚠️ Masukkan nama terlebih dahulu.', 'error');
+
+      btn.disabled = true;
+      loading.style.display = 'block';
+      showStatus('🔄 Memproses foto & mengirim...', '');
+
+      // Capture frame
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+
+      // Kompres
+      const base64 = await compressImage(canvas, CONFIG.MAX_WIDTH, CONFIG.COMPRESS_QUALITY);
+      
+      // Kirim ke GAS
+      try {
+        const res = await fetch(CONFIG.WEB_APP_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: name.toLowerCase().replace(/\s/g, ''),
+            userName: name,
+            base64Image: base64,
+            lat: userLat, lng: userLng,
+            accuracy: userAccuracy,
+            timestamp: new Date().toISOString()
+          })
+        });
+        const data = await res.json();
+        if (data.success) showStatus('✅ Absensi berhasil! Foto tersimpan di Drive.', 'success');
+        else showStatus(`❌ Gagal: ${data.error}`, 'error');
+      } catch (err) {
+        showStatus('❌ Gagal koneksi ke server. Periksa internet.', 'error');
+      } finally {
+        btn.disabled = false;
+        loading.style.display = 'none';
+      }
+    });
+
+    async function compressImage(srcCanvas, maxWidth, quality) {
+      const scale = Math.min(1, maxWidth / srcCanvas.width);
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width = srcCanvas.width * scale;
+      tmpCanvas.height = srcCanvas.height * scale;
+      tmpCanvas.getContext('2d').drawImage(srcCanvas, 0, 0, tmpCanvas.width, tmpCanvas.height);
+      return tmpCanvas.toDataURL('image/jpeg', quality);
+    }
+
+    function showStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = `status ${type}`;
+    }
+
+    // Init
+    initCamera();
+    getLocation();
+  </script>
+</body>
+</html>
